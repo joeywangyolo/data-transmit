@@ -1,0 +1,191 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${DEPLOY_APP_NAME}
+  namespace: ${PROJECT_NAMESPACE}
+spec:
+  selector:
+    matchLabels:
+      app: ${DEPLOY_APP_NAME}
+  template:
+    metadata:
+      labels:
+        app: ${DEPLOY_APP_NAME}
+    spec:
+      # ★ 關鍵：讓隨機 UID 具備 group 0 權限
+      securityContext:
+        fsGroup: 0
+        fsGroupChangePolicy: Always
+
+      #serviceAccountName: javauser
+      initContainers:
+        - name: prep-and-fix-perms
+          image: registry.access.redhat.com/ubi9/ubi
+          command: ["sh", "-lc"]
+          args:
+            - |
+              set -eux
+              # 針對 subPath=pgadmin 的對應目錄動手
+              mkdir -p /datnas/pgadmin/sessions
+
+              # 設成 group 0 + setgid，並開 group 可寫
+              chgrp -R 0 /datnas/pgadmin || true
+              chmod -R 2775 /datnas/pgadmin || true
+
+              # 保守：新建檔案預設走 660/770 族群可寫
+              umask 0002
+
+              echo '--- AFTER (stat) ---'
+              id -a || true
+              ls -lnd /datnas /datnas/pgadmin /datnas/pgadmin/sessions || true
+
+              echo '--- WRITE TEST ---'
+              ( touch /datnas/pgadmin/.writetest && rm -f /datnas/pgadmin/.writetest && echo OK ) || (echo FAIL && exit 1)
+          volumeMounts:
+            - name: ${PROJECT_NAME}               # ← 和主容器同一顆 PVC
+              mountPath: /datnas                  # ← 根掛載，不用 subPath
+
+      containers:
+        - name: ${DEPLOY_APP_NAME}
+          image: ${REGISTRY_DOMAIN}/${CI_PROJECT_NAMESPACE}/${IMAGE_NAME}:${CI_PIPELINE_ID}
+
+          livenessProbe:
+            httpGet:
+              path: /misc/ping
+              port: 5050
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3
+            timeoutSeconds: 10
+
+          readinessProbe:
+            httpGet:
+              path: /misc/ping
+              port: 5050
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            failureThreshold: 3
+            timeoutSeconds: 5
+
+          ports:
+            - containerPort: 5050
+
+          env:
+            - name: "CFG_SERVER"
+              value: ${CFG_SERVER}
+            - name: "PROJECT_NAME"
+              value: ${PROJECT_NAME}
+            - name: "CI_COMMIT_BRANCH"
+              value: ${CI_COMMIT_BRANCH}
+
+            - name: "PGADMIN_DEFAULT_EMAIL"
+              value: "cxida@cathay-ins.com.tw"
+            - name: "PGADMIN_DEFAULT_PASSWORD"
+              value: ${PGADMIN_DEFAULT_PASSWORD}
+
+            # 可留一組 DEFAULT_* 即可；SETUP_* 非必要（若想精簡可移除）
+            - name: "PGADMIN_SETUP_EMAIL"
+              value: "cxida@cathay-ins.com.tw"
+            - name: "PGADMIN_SETUP_PASSWORD"
+              value: ${PGADMIN_DEFAULT_PASSWORD}
+
+            - name: "PGADMIN_DISABLE_POSTFIX"
+              value: "1"
+
+            # 關閉升級檢查
+            - name: PGADMIN_CONFIG_UPGRADE_CHECK_ENABLED
+              value: "False"
+
+            # 反向代理修正
+            - name: PGADMIN_CONFIG_ENABLE_PROXY_FIX
+              value: "True"
+            - name: PGADMIN_CONFIG_PROXY_FIX_CONFIG
+              value: "{'x_for': 1, 'x_proto': 1, 'x_host': 1, 'x_port': 1, 'x_prefix': 1}"
+
+            # URL Scheme 必須是 Python 字面值字串
+            - name: PGADMIN_CONFIG_PREFERRED_URL_SCHEME
+              value: "'https'"
+
+            # 綁定埠一致
+            - name: PGADMIN_CONFIG_DEFAULT_SERVER_PORT
+              value: "5050"
+
+            # （可選）明示資料目錄，避免改版差異
+            - name: PGADMIN_CONFIG_DATA_DIR
+              value: "/var/lib/pgadmin"
+
+            # 延長啟動超時，避免冷啟太慢
+            - name: TIMEOUT
+              value: "120"
+            - name: GUNICORN_TIMEOUT
+              value: "120"
+
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "2"
+              memory: "2048Mi"
+
+          volumeMounts:
+            - name: ${PROJECT_NAME}
+              mountPath: /var/lib/pgadmin         # ← 主容器目錄
+              subPath: pgadmin                    # ← 保留 subPath（B 方案）
+
+      volumes:
+        - name: ${PROJECT_NAME}
+          persistentVolumeClaim:
+            claimName: dat-nas-pvc
+
+      nodeSelector:
+        node-role.kubernetes.io/worker: ''
+
+      imagePullSecrets:
+        - name: ${OCP_PULL_SECRETS}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${DEPLOY_APP_NAME}
+  namespace: ${PROJECT_NAMESPACE}
+  labels:
+    app: ${DEPLOY_APP_NAME}
+spec:
+  selector:
+    app: ${DEPLOY_APP_NAME}
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 5050
+
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: ${DEPLOY_APP_NAME}
+  namespace: ${PROJECT_NAMESPACE}
+  annotations:
+    haproxy.router.openshift.io/timeout: 300s
+spec:
+  host: ${DEPLOY_APP_NAME}.${PROJECT_NAMESPACE}.${OCP_HOST_DOMAIN}
+  path: "/"
+  to:
+    kind: Service
+    name: ${DEPLOY_APP_NAME}
+
+---
+apiVersion: autoscaling/v1
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ${DEPLOY_APP_NAME}
+  namespace: ${PROJECT_NAMESPACE}
+spec:
+  maxReplicas: 2
+  minReplicas: 1
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ${DEPLOY_APP_NAME}
+  targetCPUUtilizationPercentage: 75
