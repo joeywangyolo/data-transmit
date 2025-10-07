@@ -1,0 +1,22 @@
+FROM python:3.11-slim
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_PROGRESS_BAR=off
+
+# 安裝 MLflow + PostgreSQL 驅動
+RUN pip install --no-cache-dir --prefer-binary "mlflow==2.16.1" "psycopg2-binary>=2.9"
+
+WORKDIR /app
+
+# 用環境變數帶 backend / artifact 路徑，避免把機敏資訊寫死在映像裡
+ENV BACKEND_STORE_URI="" \
+    ARTIFACT_ROOT="/app/mlruns" \
+    MLFLOW_HOST=0.0.0.0 \
+    MLFLOW_PORT=5000
+
+CMD ["bash","-lc","mlflow server \
+  --backend-store-uri ${BACKEND_STORE_URI} \
+  --default-artifact-root ${ARTIFACT_ROOT} \
+  --host ${MLFLOW_HOST} --port ${MLFLOW_PORT}"]
