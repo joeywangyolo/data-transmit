@@ -1,0 +1,43 @@
+version: "3.3"
+services:
+  postgres:
+    image: postgres:16
+    container_name: mlflow-postgres
+    environment:
+      POSTGRES_DB: mlflow
+      POSTGRES_USER: mlflow_user
+      POSTGRES_PASSWORD: mlflow_pass
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mlflow_user -d mlflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mlflow:
+    build: .
+    container_name: mlflow
+    depends_on:
+      - postgres 
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./mlruns:/app/mlruns
+    environment:
+      BACKEND_STORE_URI: "postgresql+psycopg2://mlflow_user:mlflow_pass@postgres:5432/mlflow"
+      ARTIFACT_ROOT: "/app/mlruns"
+    # 等 PG TCP ready 再啟動
+    command: >
+      bash -lc "
+      until (</dev/tcp/postgres/5432) >/dev/null 2>&1; do
+        echo waiting for postgres; sleep 2;
+      done;
+      exec mlflow server
+        --backend-store-uri ${BACKEND_STORE_URI}
+        --default-artifact-root ${ARTIFACT_ROOT}
+        --host 0.0.0.0 --port 5000"
+    restart: unless-stopped
+
+volumes:
+  pgdata:
