@@ -1,0 +1,130 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: custom-secrets
+type: Opaque
+stringData:
+  DATABASE_URL: ${DATABASE_URL}
+  MLFLOW_ADMIN_PASSWORD: ${MLFLOW_ADMIN_PASSWORD}
+  MLFLOW_ADMIN_NAME: ${MLFLOW_ADMIN_NAME}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${CI_PROJECT_NAME}
+  namespace: ${PROJECT_NAMESPACE}
+spec:
+  selector:
+    matchLabels:
+      app: ${CI_PROJECT_NAME}
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: ${CI_PROJECT_NAME}
+    spec:
+      #serviceAccountName: javauser
+      containers:
+        - name: ${CI_PROJECT_NAME}
+          image: ${REGISTRY_DOMAIN}/${PROJECT_NAMESPACE}/${CI_PROJECT_NAME}:${CI_PIPELINE_ID}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            failureThreshold: 3
+            timeoutSeconds: 60
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            failureThreshold: 5
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            successThreshold: 1
+            timeoutSeconds: 60
+          ports:
+            - containerPort: 8000
+          env: 
+            - name: "CFG_SERVER"
+              value: ${CFG_SERVER}
+            - name: "ENV"
+              value: "ocpsit"
+            - name: "DATABASE_URL"
+              valueFrom:
+                secretKeyRef:
+                  name: custom-secrets
+                  key: DATABASE_URL
+            - name: "MLFLOW_ADMIN_PASSWORD"
+              valueFrom:
+                secretKeyRef:
+                  name: custom-secrets
+                  key: MLFLOW_ADMIN_PASSWORD
+            - name: "MLFLOW_ADMIN_NAME"
+              valueFrom:
+                secretKeyRef:
+                  name: custom-secrets
+                  key: MLFLOW_ADMIN_NAME
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "1000m"
+              memory: "2Gi"
+          volumeMounts:
+            - name: ${CI_PROJECT_NAME}
+              mountPath: /DAT-NAS
+      volumes:
+        - name: ${CI_PROJECT_NAME}
+          persistentVolumeClaim: 
+              claimName: dat-nas-pvc
+      nodeSelector:
+        node-role.kubernetes.io/worker: ''
+      imagePullSecrets:
+        - name: ${OCP_PULL_SECRETS}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${CI_PROJECT_NAME}
+  namespace: ${PROJECT_NAMESPACE}
+  labels:
+    app: ${CI_PROJECT_NAME}
+spec:
+  selector:
+    app: ${CI_PROJECT_NAME}
+  ports:
+    - protocol: TCP
+      port: 8000
+      targetPort: 8000
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: ${CI_PROJECT_NAME}
+  namespace: ${PROJECT_NAMESPACE}
+  annotations:
+    haproxy.router.openshift.io/timeout: 300s
+spec:
+  host: ${CI_PROJECT_NAME}.${PROJECT_NAMESPACE}.${OCP_HOST_DOMAIN}
+  path: "/" 
+  to:
+    kind: Service
+    name: ${CI_PROJECT_NAME}
+---
+apiVersion: autoscaling/v1
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ${CI_PROJECT_NAME}
+  namespace: ${PROJECT_NAMESPACE}
+spec:
+  maxReplicas: 2
+  minReplicas: 1
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ${CI_PROJECT_NAME}
+  targetCPUUtilizationPercentage: 75
+
