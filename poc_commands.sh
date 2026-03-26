@@ -70,16 +70,16 @@ podman ps
 ########################################################################
 
 # ---- 步驟 1.1：啟動容器 ----
-# ★★★ 把 <模型路徑> 換成步驟 0.3 找到的路徑 ★★★
+# 使用 /DAT-NAS/models 掛載模型（唯讀，不影響現有資料）
 podman run -it --rm \
   --name joey-poc-allinone \
   --network host \
   --device nvidia.com/gpu=3 \
   --shm-size=4g \
   -e NVIDIA_VISIBLE_DEVICES=3 \
-  -v <模型路徑>:/models:ro \
-  joey-poc-ray-vllm:v1 \
-  bash
+  -v /DAT-NAS/models:/models:ro \
+  --entrypoint bash \
+  joey-poc-ray-vllm:v1
 
 # === 以下在容器內執行 ===
 
@@ -96,7 +96,7 @@ ray status
 
 
 # ---- 步驟 1.4：建立 config 並部署 ----
-# ★★★ 如果模型不在 /models/TinyLlama-1.1B-Chat-v1.0，修改 model_source ★★★
+# 使用 opt-125m 模型（最小，約 250MB）
 cat > /tmp/config.yaml << 'EOF'
 applications:
   - name: llm-app
@@ -105,8 +105,8 @@ applications:
     args:
       llm_configs:
         - model_loading_config:
-            model_id: tinyllama
-            model_source: /models/TinyLlama-1.1B-Chat-v1.0
+            model_id: opt-125m
+            model_source: /models/opt-125m
           deployment_config:
             autoscaling_config:
               min_replicas: 1
@@ -130,7 +130,7 @@ serve status
 curl http://localhost:8099/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "tinyllama",
+    "model": "opt-125m",
     "messages": [{"role": "user", "content": "Say hello in one sentence."}],
     "max_tokens": 50
   }'
@@ -164,8 +164,8 @@ podman run -it --rm \
   --network host \
   -e NVIDIA_VISIBLE_DEVICES="" \
   -e RAY_SERVE_HTTP_PORT=8099 \
-  joey-poc-ray-vllm:v1 \
-  bash
+  --entrypoint bash \
+  joey-poc-ray-vllm:v1
 
 # === Head 容器內 ===
 ray start --head --num-gpus=0 --port=6379 --dashboard-host=0.0.0.0 --dashboard-port=8265
@@ -176,16 +176,16 @@ ray status
 # ==== Tab 2：Worker 容器（GPU 3）====
 
 # ---- 步驟 2.2：啟動 Worker ----
-# ★★★ 把 <模型路徑> 換成實際路徑 ★★★
+# 使用 /DAT-NAS/models 掛載模型（唯讀）
 podman run -it --rm \
   --name joey-poc-worker \
   --network host \
   --device nvidia.com/gpu=3 \
   --shm-size=4g \
   -e NVIDIA_VISIBLE_DEVICES=3 \
-  -v <模型路徑>:/models:ro \
-  joey-poc-ray-vllm:v1 \
-  bash
+  -v /DAT-NAS/models:/models:ro \
+  --entrypoint bash \
+  joey-poc-ray-vllm:v1
 
 # === Worker 容器內 ===
 nvidia-smi
@@ -200,7 +200,7 @@ ray status
 
 
 # ---- 步驟 2.4：部署模型 ----
-# ★★★ 如果模型路徑不同，修改 model_source ★★★
+# 使用 opt-125m 模型
 cat > /tmp/config.yaml << 'EOF'
 applications:
   - name: llm-app
@@ -209,8 +209,8 @@ applications:
     args:
       llm_configs:
         - model_loading_config:
-            model_id: tinyllama
-            model_source: /models/TinyLlama-1.1B-Chat-v1.0
+            model_id: opt-125m
+            model_source: /models/opt-125m
           deployment_config:
             autoscaling_config:
               min_replicas: 1
@@ -230,7 +230,7 @@ serve status
 curl http://localhost:8099/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "tinyllama",
+    "model": "opt-125m",
     "messages": [{"role": "user", "content": "Say hello in one sentence."}],
     "max_tokens": 50
   }'
@@ -258,7 +258,7 @@ curl http://localhost:8099/v1/chat/completions \
 serve status
 curl http://localhost:8099/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "tinyllama", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 10}'
+  -d '{"model": "opt-125m", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 10}'
 
 
 # ==== Tab 2（Worker 容器）====
@@ -282,16 +282,16 @@ serve status
 # ==== Tab 2（新 session）====
 
 # ---- 步驟 3.4：啟動新 Worker ----
-# ★★★ 把 <模型路徑> 換成實際路徑 ★★★
+# 使用 /DAT-NAS/models 掛載模型（唯讀）
 podman run -it --rm \
   --name joey-poc-worker-v2 \
   --network host \
   --device nvidia.com/gpu=3 \
   --shm-size=4g \
   -e NVIDIA_VISIBLE_DEVICES=3 \
-  -v <模型路徑>:/models:ro \
-  joey-poc-ray-vllm:v1 \
-  bash
+  -v /DAT-NAS/models:/models:ro \
+  --entrypoint bash \
+  joey-poc-ray-vllm:v1
 
 # === 新 Worker 容器內 ===
 ray start --address=127.0.0.1:6379 --num-gpus=1
@@ -311,7 +311,7 @@ serve status
 
 curl http://localhost:8099/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "tinyllama", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 10}'
+  -d '{"model": "opt-125m", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 10}'
 
 
 # ---- 步驟 3.6：清理 ----
@@ -332,8 +332,8 @@ podman run -it --rm \
   --network host \
   -e NVIDIA_VISIBLE_DEVICES="" \
   -e RAY_SERVE_HTTP_PORT=8099 \
-  joey-poc-ray-vllm:v1 \
-  bash
+  --entrypoint bash \
+  joey-poc-ray-vllm:v1
 
 # === Head 容器內 ===
 ray start --head --num-gpus=0 --port=6379 --dashboard-host=0.0.0.0 --dashboard-port=8265
@@ -342,7 +342,7 @@ ray start --head --num-gpus=0 --port=6379 --dashboard-host=0.0.0.0 --dashboard-p
 # ==== Tab 2：Worker（GPU 2 + GPU 3）====
 
 # ---- 步驟 4.2：啟動 Worker ----
-# ★★★ 把 <模型路徑> 換成實際路徑 ★★★
+# 使用 /DAT-NAS/models 掛載模型（唯讀）
 podman run -it --rm \
   --name joey-poc-worker-tp2 \
   --network host \
@@ -350,9 +350,9 @@ podman run -it --rm \
   --device nvidia.com/gpu=3 \
   --shm-size=8g \
   -e NVIDIA_VISIBLE_DEVICES=2,3 \
-  -v <模型路徑>:/models:ro \
-  joey-poc-ray-vllm:v1 \
-  bash
+  -v /DAT-NAS/models:/models:ro \
+  --entrypoint bash \
+  joey-poc-ray-vllm:v1
 
 # === Worker 容器內 ===
 nvidia-smi
@@ -371,8 +371,8 @@ applications:
     args:
       llm_configs:
         - model_loading_config:
-            model_id: tinyllama
-            model_source: /models/TinyLlama-1.1B-Chat-v1.0
+            model_id: opt-125m
+            model_source: /models/opt-125m
           deployment_config:
             autoscaling_config:
               min_replicas: 1
@@ -390,7 +390,7 @@ serve status
 # ---- 步驟 4.4：測試推理 ----
 curl http://localhost:8099/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "tinyllama", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 10}'
+  -d '{"model": "opt-125m", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 10}'
 
 
 # ---- 步驟 4.5：立即清理（釋放 GPU 2）----
@@ -405,7 +405,7 @@ curl http://localhost:8099/v1/chat/completions \
 ########################################################################
 
 # ---- 步驟 5.1：啟動容器 ----
-# ★★★ 把 <模型路徑> 換成實際路徑 ★★★
+# 使用 /DAT-NAS/models 掛載模型（唯讀）
 podman run -it --rm \
   --name joey-poc-planb \
   --network host \
@@ -413,9 +413,9 @@ podman run -it --rm \
   --shm-size=4g \
   --privileged \
   -e NVIDIA_VISIBLE_DEVICES=3 \
-  -v <模型路徑>:/models:ro \
-  joey-poc-ray-vllm:v1 \
-  bash
+  -v /DAT-NAS/models:/models:ro \
+  --entrypoint bash \
+  joey-poc-ray-vllm:v1
 
 # === 容器內 ===
 ray start --head --num-gpus=1 --port=6379 --dashboard-host=0.0.0.0 --dashboard-port=8265
@@ -435,8 +435,8 @@ applications:
     args:
       llm_configs:
         - model_loading_config:
-            model_id: tinyllama
-            model_source: /models/TinyLlama-1.1B-Chat-v1.0
+            model_id: opt-125m
+            model_source: /models/opt-125m
           deployment_config:
             autoscaling_config:
               min_replicas: 1
@@ -459,7 +459,7 @@ serve status
 
 curl http://localhost:8099/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "tinyllama", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 10}'
+  -d '{"model": "opt-125m", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 10}'
 
 
 # ---- 步驟 5.5：清理 ----
