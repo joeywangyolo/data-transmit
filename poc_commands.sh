@@ -483,3 +483,20 @@ nvidia-smi
 podman ps
 
 # 完成！
+
+########################################################################
+
+# 查 hooks
+ls /usr/share/containers/oci/hooks.d/
+
+# 查 CDI specs
+ls /etc/cdi/ /var/run/cdi/ 2>/dev/null
+
+# 查 nvidia container toolkit
+which nvidia-ctk 2>/dev/null
+nvidia-ctk --version 2>/dev/null
+
+#也看一下
+podman ps --format "{{.Names}}"
+# 如果上面看不到現有容器，試：
+sudo podman ps --format "{{.Names}}"
