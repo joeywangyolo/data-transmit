@@ -1,0 +1,493 @@
+#!/bin/bash
+########################################################################
+# Joey POC 指令集 — Ray Serve + vLLM 分容器架構驗證
+# 使用方式：開啟此檔案，依序複製每個步驟的指令到終端機執行
+# 注意：<模型路徑> 需替換成實際路徑（Phase 0 會幫你找到）
+########################################################################
+
+
+########################################################################
+# Phase 0：環境準備（在 Host 上執行）
+########################################################################
+
+# ---- 步驟 0.1：確認現有 image 有沒有 Ray ----
+podman run --rm localhost/vllm/vllm-openai:v0.10.1.1 pip list 2>/dev/null | grep -i ray
+# 如果有輸出 ray 相關套件 → 記下版本，可能不需要建 image
+# 如果沒有輸出 → 繼續步驟 0.2
+
+
+# ---- 步驟 0.2a：測試容器內能不能 pip install ----
+podman run --rm localhost/vllm/vllm-openai:v0.10.1.1 pip install --dry-run "ray[serve]" 2>&1 | tail -10
+# --dry-run 不會真的安裝，只是測試能不能連到 pip source
+# 如果成功（顯示 Would install ...）→ 可以用方式 C 建 image
+# 如果失敗（Connection error）→ 需要離線 wheel，跟我說
+
+
+# ---- 步驟 0.2b：檢查有沒有內部 pip mirror 設定 ----
+cat ~/.pip/pip.conf 2>/dev/null
+cat /etc/pip.conf 2>/dev/null
+podman exec $(podman ps -q | head -1) pip config list 2>/dev/null
+
+
+# ---- 步驟 0.2c：建 image（方式 C：podman commit，最簡單）----
+# 如果步驟 0.2a 測試能 pip install，用這個方式：
+podman run -it --name joey-tmp localhost/vllm/vllm-openai:v0.10.1.1 bash
+
+# === 進入容器後執行 ===
+pip install "ray[serve]"
+exit
+# === 離開容器後回到 Host ===
+
+podman commit joey-tmp joey-poc-ray-vllm:v1
+podman rm joey-tmp
+
+# 確認 image 建好了
+podman images | grep joey-poc
+
+
+# ---- 步驟 0.2d：建 image（方式 A：用 Containerfile，如果方式 C 不行）----
+# 把 Containerfile.joey-poc 檔案放到主機上任意目錄，然後：
+podman build -t joey-poc-ray-vllm:v1 -f Containerfile.joey-poc .
+podman images | grep joey-poc
+
+
+# ---- 步驟 0.3：找模型檔案位置 ----
+podman inspect --format='{{range .Mounts}}{{.Source}} -> {{.Destination}}{{"\n"}}{{end}}' $(podman ps -q | head -1)
+ls /DAT-NAS/ 2>/dev/null
+find / -maxdepth 4 -name "config.json" -path "*TinyLlama*" 2>/dev/null
+find / -maxdepth 4 -name "config.json" -path "*Qwen*" 2>/dev/null
+# 記下模型路徑，後面要用。例如 /DAT-NAS/models
+
+
+# ---- 步驟 0.4：確認 port 沒有衝突 ----
+ss -tlnp | grep -E '8099|8265|6379'
+# 如果沒輸出 → port 可用
+# 如果有輸出 → 需要換 port，跟我說
+
+
+# ---- 步驟 0.5：確認現有環境快照（測試前拍照）----
+nvidia-smi
+podman ps
+# 拍照或截圖存起來，測試完可以對比
+
+
+
+########################################################################
+# Phase 1：基線測試 — 一整包跑在 GPU 3（只需要 1 個 Tab）
+########################################################################
+
+# ---- 步驟 1.1：啟動容器 ----
+# ★★★ 把 <模型路徑> 換成步驟 0.3 找到的路徑 ★★★
+podman run -it --rm \
+  --name joey-poc-allinone \
+  --network host \
+  --device nvidia.com/gpu=3 \
+  --shm-size=4g \
+  -e NVIDIA_VISIBLE_DEVICES=3 \
+  -v <模型路徑>:/models:ro \
+  joey-poc-ray-vllm:v1 \
+  bash
+
+# === 以下在容器內執行 ===
+
+# ---- 步驟 1.2：確認只看到 1 顆 GPU ----
+nvidia-smi
+python3 -c "import torch; print(f'GPU count: {torch.cuda.device_count()}')"
+# 預期：只看到 1 顆 GPU。如果超過 1 顆，立即 exit 停止！
+
+
+# ---- 步驟 1.3：啟動 Ray ----
+ray start --head --num-gpus=1 --dashboard-host=0.0.0.0 --port=6379 --dashboard-port=8265
+ray status
+# 預期：1 node, 1 GPU
+
+
+# ---- 步驟 1.4：建立 config 並部署 ----
+# ★★★ 如果模型不在 /models/TinyLlama-1.1B-Chat-v1.0，修改 model_source ★★★
+cat > /tmp/config.yaml << 'EOF'
+applications:
+  - name: llm-app
+    route_prefix: /
+    import_path: ray.serve.llm:build_openai_app
+    args:
+      llm_configs:
+        - model_loading_config:
+            model_id: tinyllama
+            model_source: /models/TinyLlama-1.1B-Chat-v1.0
+          deployment_config:
+            autoscaling_config:
+              min_replicas: 1
+              max_replicas: 1
+          engine_kwargs:
+            tensor_parallel_size: 1
+            max_model_len: 2048
+    runtime_env:
+      env_vars:
+        RAY_SERVE_HTTP_PORT: "8099"
+EOF
+
+export RAY_SERVE_HTTP_PORT=8099
+serve deploy /tmp/config.yaml
+sleep 60
+serve status
+# 預期：HEALTHY
+
+
+# ---- 步驟 1.5：測試推理 ----
+curl http://localhost:8099/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "tinyllama",
+    "messages": [{"role": "user", "content": "Say hello in one sentence."}],
+    "max_tokens": 50
+  }'
+# 預期：收到模型回應
+
+
+# ---- 步驟 1.6：在 Host 上確認沒影響現有服務（開另一個 Tab）----
+# nvidia-smi
+# podman ps
+
+
+# ---- 步驟 1.7：清理（在容器內）----
+ray stop
+exit
+# 容器會自動刪除（--rm）
+
+# 在 Host 上確認 GPU 3 已釋放
+nvidia-smi
+
+
+
+########################################################################
+# Phase 2：方案 A — Head + Worker 分容器（需要 2 個 Tab）
+########################################################################
+
+# ==== Tab 1：Head 容器（不給 GPU）====
+
+# ---- 步驟 2.1：啟動 Head ----
+podman run -it --rm \
+  --name joey-poc-head \
+  --network host \
+  -e NVIDIA_VISIBLE_DEVICES="" \
+  -e RAY_SERVE_HTTP_PORT=8099 \
+  joey-poc-ray-vllm:v1 \
+  bash
+
+# === Head 容器內 ===
+ray start --head --num-gpus=0 --port=6379 --dashboard-host=0.0.0.0 --dashboard-port=8265
+ray status
+# 預期：1 node, 0 GPUs
+
+
+# ==== Tab 2：Worker 容器（GPU 3）====
+
+# ---- 步驟 2.2：啟動 Worker ----
+# ★★★ 把 <模型路徑> 換成實際路徑 ★★★
+podman run -it --rm \
+  --name joey-poc-worker \
+  --network host \
+  --device nvidia.com/gpu=3 \
+  --shm-size=4g \
+  -e NVIDIA_VISIBLE_DEVICES=3 \
+  -v <模型路徑>:/models:ro \
+  joey-poc-ray-vllm:v1 \
+  bash
+
+# === Worker 容器內 ===
+nvidia-smi
+ray start --address=127.0.0.1:6379 --num-gpus=1
+
+
+# ==== 回到 Tab 1（Head 容器）====
+
+# ---- 步驟 2.3：確認叢集 ----
+ray status
+# 預期：2 nodes, Head 0 GPU + Worker 1 GPU
+
+
+# ---- 步驟 2.4：部署模型 ----
+# ★★★ 如果模型路徑不同，修改 model_source ★★★
+cat > /tmp/config.yaml << 'EOF'
+applications:
+  - name: llm-app
+    route_prefix: /
+    import_path: ray.serve.llm:build_openai_app
+    args:
+      llm_configs:
+        - model_loading_config:
+            model_id: tinyllama
+            model_source: /models/TinyLlama-1.1B-Chat-v1.0
+          deployment_config:
+            autoscaling_config:
+              min_replicas: 1
+              max_replicas: 1
+          engine_kwargs:
+            tensor_parallel_size: 1
+            max_model_len: 2048
+EOF
+
+serve deploy /tmp/config.yaml
+sleep 60
+serve status
+# 預期：HEALTHY
+
+
+# ---- 步驟 2.5：測試推理 ----
+curl http://localhost:8099/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "tinyllama",
+    "messages": [{"role": "user", "content": "Say hello in one sentence."}],
+    "max_tokens": 50
+  }'
+
+
+# ---- 步驟 2.6：在 Host 上確認（Tab 3）----
+# nvidia-smi
+# podman ps
+
+
+# ---- 步驟 2.7：如果要繼續 Phase 3，不要清理，直接往下 ----
+# 如果要休息，先清理：
+# Tab 1（Head）: ray stop && exit
+# Tab 2（Worker）: ray stop && exit
+
+
+
+########################################################################
+# Phase 3：獨立更新測試（接續 Phase 2，不要清理）
+########################################################################
+
+# ==== Tab 1（Head 容器）====
+
+# ---- 步驟 3.1：確認服務正常 ----
+serve status
+curl http://localhost:8099/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "tinyllama", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 10}'
+
+
+# ==== Tab 2（Worker 容器）====
+
+# ---- 步驟 3.2：模擬 Worker 下線 ----
+ray stop
+exit
+
+
+# ==== 回到 Tab 1（Head 容器）====
+
+# ---- 步驟 3.3：觀察 Head 反應 ----
+sleep 10
+ray status
+# 預期：只剩 1 node
+serve status
+# 預期：UNHEALTHY（因為 Worker 不見了）
+# 重點：Head 本身有沒有 crash？還能打指令嗎？
+
+
+# ==== Tab 2（新 session）====
+
+# ---- 步驟 3.4：啟動新 Worker ----
+# ★★★ 把 <模型路徑> 換成實際路徑 ★★★
+podman run -it --rm \
+  --name joey-poc-worker-v2 \
+  --network host \
+  --device nvidia.com/gpu=3 \
+  --shm-size=4g \
+  -e NVIDIA_VISIBLE_DEVICES=3 \
+  -v <模型路徑>:/models:ro \
+  joey-poc-ray-vllm:v1 \
+  bash
+
+# === 新 Worker 容器內 ===
+ray start --address=127.0.0.1:6379 --num-gpus=1
+
+
+# ==== 回到 Tab 1（Head 容器）====
+
+# ---- 步驟 3.5：檢查服務恢復 ----
+sleep 10
+ray status
+# 預期：2 nodes
+serve status
+# 如果還是 UNHEALTHY，手動 redeploy：
+serve deploy /tmp/config.yaml
+sleep 60
+serve status
+
+curl http://localhost:8099/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "tinyllama", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 10}'
+
+
+# ---- 步驟 3.6：清理 ----
+# Tab 1（Head）: ray stop && exit
+# Tab 2（Worker）: ray stop && exit
+
+
+
+########################################################################
+# Phase 4：多 GPU 測試 — TP=2（GPU 2 + GPU 3）（選做，可跳過）
+########################################################################
+
+# ==== Tab 1：Head ====
+
+# ---- 步驟 4.1：啟動 Head ----
+podman run -it --rm \
+  --name joey-poc-head-tp2 \
+  --network host \
+  -e NVIDIA_VISIBLE_DEVICES="" \
+  -e RAY_SERVE_HTTP_PORT=8099 \
+  joey-poc-ray-vllm:v1 \
+  bash
+
+# === Head 容器內 ===
+ray start --head --num-gpus=0 --port=6379 --dashboard-host=0.0.0.0 --dashboard-port=8265
+
+
+# ==== Tab 2：Worker（GPU 2 + GPU 3）====
+
+# ---- 步驟 4.2：啟動 Worker ----
+# ★★★ 把 <模型路徑> 換成實際路徑 ★★★
+podman run -it --rm \
+  --name joey-poc-worker-tp2 \
+  --network host \
+  --device nvidia.com/gpu=2 \
+  --device nvidia.com/gpu=3 \
+  --shm-size=8g \
+  -e NVIDIA_VISIBLE_DEVICES=2,3 \
+  -v <模型路徑>:/models:ro \
+  joey-poc-ray-vllm:v1 \
+  bash
+
+# === Worker 容器內 ===
+nvidia-smi
+# 預期：看到 2 顆 GPU
+ray start --address=127.0.0.1:6379 --num-gpus=2
+
+
+# ==== 回到 Tab 1（Head 容器）====
+
+# ---- 步驟 4.3：部署 TP=2 ----
+cat > /tmp/config_tp2.yaml << 'EOF'
+applications:
+  - name: llm-app
+    route_prefix: /
+    import_path: ray.serve.llm:build_openai_app
+    args:
+      llm_configs:
+        - model_loading_config:
+            model_id: tinyllama
+            model_source: /models/TinyLlama-1.1B-Chat-v1.0
+          deployment_config:
+            autoscaling_config:
+              min_replicas: 1
+              max_replicas: 1
+          engine_kwargs:
+            tensor_parallel_size: 2
+            max_model_len: 2048
+EOF
+
+serve deploy /tmp/config_tp2.yaml
+sleep 60
+serve status
+
+
+# ---- 步驟 4.4：測試推理 ----
+curl http://localhost:8099/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "tinyllama", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 10}'
+
+
+# ---- 步驟 4.5：立即清理（釋放 GPU 2）----
+# Tab 1: ray stop && exit
+# Tab 2: ray stop && exit
+# Host: nvidia-smi  確認 GPU 2 回到原本使用量
+
+
+
+########################################################################
+# Phase 5：方案 B — Multi-App Container（選做，可跳過）
+########################################################################
+
+# ---- 步驟 5.1：啟動容器 ----
+# ★★★ 把 <模型路徑> 換成實際路徑 ★★★
+podman run -it --rm \
+  --name joey-poc-planb \
+  --network host \
+  --device nvidia.com/gpu=3 \
+  --shm-size=4g \
+  --privileged \
+  -e NVIDIA_VISIBLE_DEVICES=3 \
+  -v <模型路徑>:/models:ro \
+  joey-poc-ray-vllm:v1 \
+  bash
+
+# === 容器內 ===
+ray start --head --num-gpus=1 --port=6379 --dashboard-host=0.0.0.0 --dashboard-port=8265
+
+
+# ---- 步驟 5.2：確認容器內有 Podman ----
+podman --version
+# 如果沒有 → 方案 B 無法測試，跳過
+
+
+# ---- 步驟 5.3：部署 ----
+cat > /tmp/config_planb.yaml << 'EOF'
+applications:
+  - name: llm-app
+    route_prefix: /
+    import_path: ray.serve.llm:build_openai_app
+    args:
+      llm_configs:
+        - model_loading_config:
+            model_id: tinyllama
+            model_source: /models/TinyLlama-1.1B-Chat-v1.0
+          deployment_config:
+            autoscaling_config:
+              min_replicas: 1
+              max_replicas: 1
+          engine_kwargs:
+            tensor_parallel_size: 1
+            max_model_len: 2048
+    runtime_env:
+      image_uri: "joey-poc-ray-vllm:v1"
+EOF
+
+serve deploy /tmp/config_planb.yaml
+sleep 90
+serve status
+
+
+# ---- 步驟 5.4：驗證 ----
+# 在 Host 上：
+# podman ps | grep joey-poc
+
+curl http://localhost:8099/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "tinyllama", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 10}'
+
+
+# ---- 步驟 5.5：清理 ----
+ray stop && exit
+
+
+
+########################################################################
+# 最終清理（每次測試完都要跑）
+########################################################################
+
+# 確認沒有殘留的 POC 容器
+podman ps -a | grep joey-poc
+
+# 如果有殘留，強制刪除
+podman rm -f $(podman ps -a | grep joey-poc | awk '{print $1}')
+
+# 確認 GPU 3 已釋放
+nvidia-smi
+
+# 確認現有服務正常
+podman ps
+
+# 完成！
