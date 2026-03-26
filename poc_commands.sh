@@ -18,10 +18,10 @@ podman run --rm --entrypoint bash localhost/vllm/vllm-openai:v0.10.1.1 -c 'pip l
 
 
 # ---- 步驟 0.2：建 image（離線 wheel 方式）----
-# 前提：已在外網電腦跑過 download_ray_wheels.bat，把 ray_wheels.tar 傳到主機上
+# 前提：已把 ray_wheels.tar 和 Containerfile.joey-poc 傳到主機同一個目錄
 #
 # 在主機上操作：
-# 1. 把 ray_wheels.tar 解壓到跟 Containerfile.joey-poc 同一個目錄
+# 1. 解壓 tar 檔
 tar -xf ray_wheels.tar
 # 解壓後目錄結構應該是：
 #   ./Containerfile.joey-poc
@@ -29,6 +29,9 @@ tar -xf ray_wheels.tar
 #     ├── ray-xxxxx.whl
 #     ├── aiohttp-xxxxx.whl
 #     └── ... 其他 .whl 檔案
+#
+# ⚠ 如果解壓出來是兩層 ray_wheels/ray_wheels/，執行：
+#   mv ray_wheels/ray_wheels/* ray_wheels/ && rmdir ray_wheels/ray_wheels
 
 # 2. 確認 ray_wheels 資料夾有 .whl 檔案
 ls ray_wheels/*.whl | head -5
