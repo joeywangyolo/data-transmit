@@ -74,9 +74,9 @@ podman ps
 podman run -it --rm \
   --name joey-poc-allinone \
   --network host \
-  --device nvidia.com/gpu=3 \
+  --device nvidia.com/gpu=all \
   --shm-size=4g \
-  -e NVIDIA_VISIBLE_DEVICES=3 \
+  -e CUDA_VISIBLE_DEVICES=3 \
   -v /DAT-NAS/models:/models:ro \
   --entrypoint bash \
   joey-poc-ray-vllm:v1
@@ -162,7 +162,7 @@ nvidia-smi
 podman run -it --rm \
   --name joey-poc-head \
   --network host \
-  -e NVIDIA_VISIBLE_DEVICES="" \
+  -e CUDA_VISIBLE_DEVICES="" \
   -e RAY_SERVE_HTTP_PORT=8099 \
   --entrypoint bash \
   joey-poc-ray-vllm:v1
@@ -180,9 +180,9 @@ ray status
 podman run -it --rm \
   --name joey-poc-worker \
   --network host \
-  --device nvidia.com/gpu=3 \
+  --device nvidia.com/gpu=all \
   --shm-size=4g \
-  -e NVIDIA_VISIBLE_DEVICES=3 \
+  -e CUDA_VISIBLE_DEVICES=3 \
   -v /DAT-NAS/models:/models:ro \
   --entrypoint bash \
   joey-poc-ray-vllm:v1
@@ -286,9 +286,9 @@ serve status
 podman run -it --rm \
   --name joey-poc-worker-v2 \
   --network host \
-  --device nvidia.com/gpu=3 \
+  --device nvidia.com/gpu=all \
   --shm-size=4g \
-  -e NVIDIA_VISIBLE_DEVICES=3 \
+  -e CUDA_VISIBLE_DEVICES=3 \
   -v /DAT-NAS/models:/models:ro \
   --entrypoint bash \
   joey-poc-ray-vllm:v1
@@ -330,7 +330,7 @@ curl http://localhost:8099/v1/chat/completions \
 podman run -it --rm \
   --name joey-poc-head-tp2 \
   --network host \
-  -e NVIDIA_VISIBLE_DEVICES="" \
+  -e CUDA_VISIBLE_DEVICES="" \
   -e RAY_SERVE_HTTP_PORT=8099 \
   --entrypoint bash \
   joey-poc-ray-vllm:v1
@@ -346,10 +346,9 @@ ray start --head --num-gpus=0 --port=6379 --dashboard-host=0.0.0.0 --dashboard-p
 podman run -it --rm \
   --name joey-poc-worker-tp2 \
   --network host \
-  --device nvidia.com/gpu=2 \
-  --device nvidia.com/gpu=3 \
+  --device nvidia.com/gpu=all \
   --shm-size=8g \
-  -e NVIDIA_VISIBLE_DEVICES=2,3 \
+  -e CUDA_VISIBLE_DEVICES=2,3 \
   -v /DAT-NAS/models:/models:ro \
   --entrypoint bash \
   joey-poc-ray-vllm:v1
@@ -409,10 +408,10 @@ curl http://localhost:8099/v1/chat/completions \
 podman run -it --rm \
   --name joey-poc-planb \
   --network host \
-  --device nvidia.com/gpu=3 \
+  --device nvidia.com/gpu=all \
   --shm-size=4g \
   --privileged \
-  -e NVIDIA_VISIBLE_DEVICES=3 \
+  -e CUDA_VISIBLE_DEVICES=3 \
   -v /DAT-NAS/models:/models:ro \
   --entrypoint bash \
   joey-poc-ray-vllm:v1
