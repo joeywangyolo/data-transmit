@@ -11,44 +11,34 @@
 ########################################################################
 
 # ---- 步驟 0.1：確認現有 image 有沒有 Ray ----
-podman run --rm localhost/vllm/vllm-openai:v0.10.1.1 pip list 2>/dev/null | grep -i ray
+# 注意：必須用 --entrypoint bash 繞過 vLLM 預設啟動流程（否則會因沒 GPU 報錯）
+podman run --rm --entrypoint bash localhost/vllm/vllm-openai:v0.10.1.1 -c 'pip list 2>/dev/null | grep -i ray'
 # 如果有輸出 ray 相關套件 → 記下版本，可能不需要建 image
 # 如果沒有輸出 → 繼續步驟 0.2
 
 
-# ---- 步驟 0.2a：測試容器內能不能 pip install ----
-podman run --rm localhost/vllm/vllm-openai:v0.10.1.1 pip install --dry-run "ray[serve]" 2>&1 | tail -10
-# --dry-run 不會真的安裝，只是測試能不能連到 pip source
-# 如果成功（顯示 Would install ...）→ 可以用方式 C 建 image
-# 如果失敗（Connection error）→ 需要離線 wheel，跟我說
+# ---- 步驟 0.2：建 image（離線 wheel 方式）----
+# 前提：已在外網電腦跑過 download_ray_wheels.bat，把 ray_wheels.tar 傳到主機上
+#
+# 在主機上操作：
+# 1. 把 ray_wheels.tar 解壓到跟 Containerfile.joey-poc 同一個目錄
+tar -xf ray_wheels.tar
+# 解壓後目錄結構應該是：
+#   ./Containerfile.joey-poc
+#   ./ray_wheels/
+#     ├── ray-xxxxx.whl
+#     ├── aiohttp-xxxxx.whl
+#     └── ... 其他 .whl 檔案
 
+# 2. 確認 ray_wheels 資料夾有 .whl 檔案
+ls ray_wheels/*.whl | head -5
 
-# ---- 步驟 0.2b：檢查有沒有內部 pip mirror 設定 ----
-cat ~/.pip/pip.conf 2>/dev/null
-cat /etc/pip.conf 2>/dev/null
-podman exec $(podman ps -q | head -1) pip config list 2>/dev/null
-
-
-# ---- 步驟 0.2c：建 image（方式 C：podman commit，最簡單）----
-# 如果步驟 0.2a 測試能 pip install，用這個方式：
-podman run -it --name joey-tmp localhost/vllm/vllm-openai:v0.10.1.1 bash
-
-# === 進入容器後執行 ===
-pip install "ray[serve]"
-exit
-# === 離開容器後回到 Host ===
-
-podman commit joey-tmp joey-poc-ray-vllm:v1
-podman rm joey-tmp
-
-# 確認 image 建好了
-podman images | grep joey-poc
-
-
-# ---- 步驟 0.2d：建 image（方式 A：用 Containerfile，如果方式 C 不行）----
-# 把 Containerfile.joey-poc 檔案放到主機上任意目錄，然後：
+# 3. 用 Containerfile 建 image
 podman build -t joey-poc-ray-vllm:v1 -f Containerfile.joey-poc .
+
+# 4. 確認 image 建好了
 podman images | grep joey-poc
+# 預期：看到 joey-poc-ray-vllm  v1  ...
 
 
 # ---- 步驟 0.3：找模型檔案位置 ----
