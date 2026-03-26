@@ -7,4 +7,5 @@ COPY ray_wheels/ /tmp/ray_wheels/
 RUN pip install --no-index --find-links /tmp/ray_wheels/ "ray[serve]" && \
     rm -rf /tmp/ray_wheels/
 
+ENTRYPOINT []
 CMD ["bash"]
