@@ -1,22 +1,10 @@
 FROM localhost/vllm/vllm-openai:v0.10.1.1
 
-# 加裝 Ray Serve（vLLM 已經在 base image 裡）
-# 注意：無法連外網，需要用以下其中一種離線安裝方式：
-#
-# 方式 A：如果有內部 PyPI mirror，取消下面這行的註解並填入 mirror URL
-# RUN pip install --index-url <internal-pypi-url> "ray[serve]"
-#
-# 方式 B：如果用離線 wheel 包（先在可連外網的機器上下載）
-# COPY ray_wheels/ /tmp/ray_wheels/
-# RUN pip install --no-index --find-links /tmp/ray_wheels/ "ray[serve]"
-#
-# 方式 C：如果主機可以 pip install（直接在容器內手動裝，不用 build）
-#   podman run -it localhost/vllm/vllm-openai:v0.10.1.1 bash
-#   pip install "ray[serve]"
-#   exit
-#   podman commit <container_id> joey-poc-ray-vllm:v1
+# 複製離線 wheel 包（從外網機器下載好的）
+COPY ray_wheels/ /tmp/ray_wheels/
 
-# 預設用直接安裝（需要能連到 PyPI 或內部 mirror）
-RUN pip install "ray[serve]"
+# 用離線 wheel 安裝 Ray Serve（不連網路）
+RUN pip install --no-index --find-links /tmp/ray_wheels/ "ray[serve]" && \
+    rm -rf /tmp/ray_wheels/
 
 CMD ["bash"]
