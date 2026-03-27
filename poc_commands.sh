@@ -494,3 +494,54 @@ nvidia-smi
 podman ps
 
 # 完成！
+
+#################
+cat > /tmp/serve_vllm.py << 'PYEOF'
+from ray import serve
+from starlette.requests import Request
+import time
+
+@serve.deployment(num_replicas=1, ray_actor_options={"num_gpus": 1})
+class VLLMService:
+    def __init__(self):
+        from vllm.engine.arg_utils import AsyncEngineArgs
+        from vllm.engine.async_llm_engine import AsyncLLMEngine
+        args = AsyncEngineArgs(
+            model="/models/opt-125m",
+            max_model_len=2048,
+            tensor_parallel_size=1,
+        )
+        self.engine = AsyncLLMEngine.from_engine_args(args)
+
+    async def __call__(self, request: Request):
+        from vllm import SamplingParams
+        body = await request.json()
+        messages = body.get("messages", [])
+        prompt = messages[-1]["content"] if messages else "Hello"
+        max_tokens = body.get("max_tokens", 50)
+        params = SamplingParams(max_tokens=max_tokens)
+        request_id = f"req-{time.time()}"
+        final_output = None
+        async for output in self.engine.generate(prompt, params, request_id):
+            final_output = output
+        text = final_output.outputs[0].text
+        return {
+            "model": "opt-125m",
+            "choices": [{"message": {"role": "assistant", "content": text}}]
+        }
+
+app = VLLMService.bind()
+PYEOF
+#################
+cat > /tmp/config.yaml << 'EOF'
+applications:
+  - name: llm-app
+    route_prefix: /
+    import_path: serve_vllm:app
+    runtime_env:
+      working_dir: /tmp
+      env_vars:
+        RAY_SERVE_HTTP_PORT: "8099"
+EOF
+
+serve deploy /tmp/config.yaml
