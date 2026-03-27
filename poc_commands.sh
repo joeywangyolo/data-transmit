@@ -74,9 +74,11 @@ podman ps
 podman run -it --rm \
   --name joey-poc-allinone \
   --network host \
+  --security-opt=label=disable \
   --device nvidia.com/gpu=all \
   --shm-size=4g \
   -e CUDA_VISIBLE_DEVICES=3 \
+  -e VLLM_DISABLE_COMPILE_CACHE=1 \
   -v /DAT-NAS/models:/models:ro \
   --entrypoint bash \
   joey-poc-ray-vllm:v1
@@ -162,6 +164,7 @@ nvidia-smi
 podman run -it --rm \
   --name joey-poc-head \
   --network host \
+  --security-opt=label=disable \
   -e CUDA_VISIBLE_DEVICES="" \
   -e RAY_SERVE_HTTP_PORT=8099 \
   --entrypoint bash \
@@ -180,9 +183,11 @@ ray status
 podman run -it --rm \
   --name joey-poc-worker \
   --network host \
+  --security-opt=label=disable \
   --device nvidia.com/gpu=all \
   --shm-size=4g \
   -e CUDA_VISIBLE_DEVICES=3 \
+  -e VLLM_DISABLE_COMPILE_CACHE=1 \
   -v /DAT-NAS/models:/models:ro \
   --entrypoint bash \
   joey-poc-ray-vllm:v1
@@ -286,9 +291,11 @@ serve status
 podman run -it --rm \
   --name joey-poc-worker-v2 \
   --network host \
+  --security-opt=label=disable \
   --device nvidia.com/gpu=all \
   --shm-size=4g \
   -e CUDA_VISIBLE_DEVICES=3 \
+  -e VLLM_DISABLE_COMPILE_CACHE=1 \
   -v /DAT-NAS/models:/models:ro \
   --entrypoint bash \
   joey-poc-ray-vllm:v1
@@ -330,6 +337,7 @@ curl http://localhost:8099/v1/chat/completions \
 podman run -it --rm \
   --name joey-poc-head-tp2 \
   --network host \
+  --security-opt=label=disable \
   -e CUDA_VISIBLE_DEVICES="" \
   -e RAY_SERVE_HTTP_PORT=8099 \
   --entrypoint bash \
@@ -346,9 +354,11 @@ ray start --head --num-gpus=0 --port=6379 --dashboard-host=0.0.0.0 --dashboard-p
 podman run -it --rm \
   --name joey-poc-worker-tp2 \
   --network host \
+  --security-opt=label=disable \
   --device nvidia.com/gpu=all \
   --shm-size=8g \
   -e CUDA_VISIBLE_DEVICES=2,3 \
+  -e VLLM_DISABLE_COMPILE_CACHE=1 \
   -v /DAT-NAS/models:/models:ro \
   --entrypoint bash \
   joey-poc-ray-vllm:v1
@@ -408,10 +418,11 @@ curl http://localhost:8099/v1/chat/completions \
 podman run -it --rm \
   --name joey-poc-planb \
   --network host \
+  --security-opt=label=disable \
   --device nvidia.com/gpu=all \
   --shm-size=4g \
-  --privileged \
   -e CUDA_VISIBLE_DEVICES=3 \
+  -e VLLM_DISABLE_COMPILE_CACHE=1 \
   -v /DAT-NAS/models:/models:ro \
   --entrypoint bash \
   joey-poc-ray-vllm:v1
@@ -483,20 +494,3 @@ nvidia-smi
 podman ps
 
 # 完成！
-
-########################################################################
-
-# 查 hooks
-ls /usr/share/containers/oci/hooks.d/
-
-# 查 CDI specs
-ls /etc/cdi/ /var/run/cdi/ 2>/dev/null
-
-# 查 nvidia container toolkit
-which nvidia-ctk 2>/dev/null
-nvidia-ctk --version 2>/dev/null
-
-#也看一下
-podman ps --format "{{.Names}}"
-# 如果上面看不到現有容器，試：
-sudo podman ps --format "{{.Names}}"
