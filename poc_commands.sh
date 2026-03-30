@@ -568,3 +568,25 @@ applications:
 EOF
 
 serve deploy /tmp/config.yaml
+
+
+
+
+
+
+cat > /tmp/test_serve.py << 'PYEOF'
+import ray
+from ray import serve
+ 
+@serve.deployment(num_replicas=1)
+class Echo:
+    async def __call__(self, request):
+        return {"msg": "Ray Serve works!"}
+ 
+app = Echo.bind()
+handle = serve.run(app)
+print("=== Echo service running on port 8000 ===")
+ 
+import signal
+signal.pause()
+PYEOF
