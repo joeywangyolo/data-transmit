@@ -356,8 +356,8 @@ podman run -it --rm \
   --network host \
   --security-opt=label=disable \
   --device nvidia.com/gpu=all \
-  --shm-size=8g \
-  -e CUDA_VISIBLE_DEVICES=2,3 \
+  --shm-size=4g \
+  -e CUDA_VISIBLE_DEVICES=3 \
   -e VLLM_DISABLE_COMPILE_CACHE=1 \
   -v /DAT-NAS/models:/models:ro \
   --entrypoint bash \
@@ -372,24 +372,46 @@ ray start --address=127.0.0.1:6379 --num-gpus=2
 # ==== 回到 Tab 1（Head 容器）====
 
 # ---- 步驟 4.3：部署 TP=2 ----
-cat > /tmp/config_tp2.yaml << 'EOF'
-applications:
-  - name: llm-app
-    route_prefix: /
-    import_path: ray.serve.llm:build_openai_app
-    args:
-      llm_configs:
-        - model_loading_config:
-            model_id: opt-125m
-            model_source: /models/opt-125m
-          deployment_config:
-            autoscaling_config:
-              min_replicas: 1
-              max_replicas: 1
-          engine_kwargs:
-            tensor_parallel_size: 2
-            max_model_len: 2048
-EOF
+cat > /tmp/deploy.py << 'PYEOF'
+import ray
+from ray import serve
+from starlette.requests import Request
+import time
+ 
+@serve.deployment(num_replicas=1, ray_actor_options={"num_gpus": 1})
+class VLLMService:
+    def __init__(self):
+        from vllm.engine.arg_utils import AsyncEngineArgs
+        from vllm.engine.async_llm_engine import AsyncLLMEngine
+        args = AsyncEngineArgs(
+            model="/models/opt-125m",
+            max_model_len=2048,
+            tensor_parallel_size=1,
+        )
+        self.engine = AsyncLLMEngine.from_engine_args(args)
+ 
+    async def __call__(self, request: Request):
+        from vllm import SamplingParams
+        body = await request.json()
+        messages = body.get("messages", [])
+        prompt = messages[-1]["content"] if messages else "Hello"
+        max_tokens = body.get("max_tokens", 50)
+        params = SamplingParams(max_tokens=max_tokens)
+        request_id = f"req-{time.time()}"
+        final_output = None
+        async for output in self.engine.generate(prompt, params, request_id):
+            final_output = output
+        text = final_output.outputs[0].text
+        return {
+            "model": "opt-125m",
+            "choices": [{"message": {"role": "assistant", "content": text}}]
+        }
+ 
+app = VLLMService.bind()
+serve.run(app, host="0.0.0.0", port=8099)
+PYEOF
+
+python3 /tmp/deploy.py
 
 serve deploy /tmp/config_tp2.yaml
 sleep 60
@@ -494,6 +516,7 @@ nvidia-smi
 podman ps
 
 # 完成！
+
 
 #################
 cat > /tmp/serve_vllm.py << 'PYEOF'
