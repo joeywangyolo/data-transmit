@@ -43,7 +43,7 @@ podman ps
 ########################################################################
 # Phase 1：Ray Serve 依賴診斷（進任意容器檢查）
 # 目的：確認 Ray Serve 的 HTTP 依賴有裝齊
-# 背景：昨天測試發現 serve.run() 會掛住，HTTP proxy 無法啟動
+# 背景：Ray worker 因 pthread_create 限制 crash → 加 --pids-limit=-1 修復
 ########################################################################
 
 # ---- 步驟 1.1：啟動診斷容器 ----
@@ -51,6 +51,7 @@ podman run -it --rm \
   --name joey-poc-diag \
   --network host \
   --security-opt=label=disable \
+  --pids-limit=-1 \
   --device nvidia.com/gpu=all \
   --shm-size=10g \
   -e CUDA_VISIBLE_DEVICES=3 \
@@ -138,6 +139,7 @@ podman run -it --rm \
   --name joey-poc-head \
   --network host \
   --security-opt=label=disable \
+  --pids-limit=-1 \
   --shm-size=10g \
   -e CUDA_VISIBLE_DEVICES="" \
   --entrypoint bash \
@@ -156,6 +158,7 @@ podman run -it --rm \
   --name joey-poc-worker \
   --network host \
   --security-opt=label=disable \
+  --pids-limit=-1 \
   --device nvidia.com/gpu=all \
   --shm-size=10g \
   -e CUDA_VISIBLE_DEVICES=3 \
@@ -278,6 +281,7 @@ podman run -it --rm \
   --name joey-poc-worker-v2 \
   --network host \
   --security-opt=label=disable \
+  --pids-limit=-1 \
   --device nvidia.com/gpu=all \
   --shm-size=10g \
   -e CUDA_VISIBLE_DEVICES=3 \
