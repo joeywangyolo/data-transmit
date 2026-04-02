@@ -29,7 +29,8 @@ podman run --rm --entrypoint bash localhost/vllm/vllm-openai:v0.10.1.1 -c 'pip l
 # 前提：已把 ray_wheels.tar 和 Containerfile.joey-poc 傳到主機同一個目錄
 tar -xf ray_wheels.tar
 ls ray_wheels/*.whl | head -5
-podman build -t joey-poc-ray-vllm:v1 -f Containerfile.joey-poc .
+podman build -t joey-poc-ray-vllm:v3 -f Containerfile.joey-poc .
+# 預期 build 尾端看到：pyarrow 20.0.0 OK、ray 2.48.0 OK
 podman images | grep joey-poc
 
 # ---- 步驟 0.3：確認 port 沒有衝突 ----
@@ -58,7 +59,7 @@ podman run -it --rm \
   -e VLLM_DISABLE_COMPILE_CACHE=1 \
   -v /DAT-NAS/models:/models:ro \
   --entrypoint bash \
-  joey-poc-ray-vllm:v1
+  joey-poc-ray-vllm:v3
 
 # === 以下在容器內執行 ===
 
@@ -143,7 +144,7 @@ podman run -it --rm \
   --shm-size=10g \
   -e CUDA_VISIBLE_DEVICES="" \
   --entrypoint bash \
-  joey-poc-ray-vllm:v1
+  joey-poc-ray-vllm:v3
 
 # === Head 容器內 ===
 ray start --head --num-gpus=0 --port=6379 --dashboard-host=0.0.0.0 --dashboard-port=8265
@@ -165,7 +166,7 @@ podman run -it --rm \
   -e VLLM_DISABLE_COMPILE_CACHE=1 \
   -v /DAT-NAS/models:/models:ro \
   --entrypoint bash \
-  joey-poc-ray-vllm:v1
+  joey-poc-ray-vllm:v3
 
 # === Worker 容器內 ===
 nvidia-smi
@@ -225,15 +226,11 @@ sleep 60
 serve status
 # 預期：HEALTHY
 
-# ---- 步驟 3.2：測試推理 ----
-curl http://localhost:8000/v1/chat/completions \
+# ---- 步驟 3.2：測試推理（opt-125m 無 chat template，用 /v1/completions）----
+curl http://localhost:8000/v1/completions \
   -H "Content-Type: application/json" \
-  -d '{
-    "model": "opt-125m",
-    "messages": [{"role": "user", "content": "Say hello in one sentence."}],
-    "max_tokens": 50
-  }'
-# 預期：收到模型回應
+  -d '{"model":"opt-125m","prompt":"Hello, my name is","max_tokens":50}'
+# 預期：收到模型回應（文字補全）
 
 # ---- 步驟 3.3：在 Host 上確認沒影響現有服務（開 Tab 3）----
 # nvidia-smi
@@ -251,9 +248,7 @@ curl http://localhost:8000/v1/chat/completions \
 
 # ---- 步驟 4.1：確認服務正常 ----
 serve status
-curl http://localhost:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model": "opt-125m", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 10}'
+curl http://localhost:8000/v1/completions -H "Content-Type: application/json" -d '{"model":"opt-125m","prompt":"Hello","max_tokens":20}'
 
 
 # ==== Tab 2（Worker 容器）====
@@ -288,7 +283,7 @@ podman run -it --rm \
   -e VLLM_DISABLE_COMPILE_CACHE=1 \
   -v /DAT-NAS/models:/models:ro \
   --entrypoint bash \
-  joey-poc-ray-vllm:v1
+  joey-poc-ray-vllm:v3
 
 # === 新 Worker 容器內 ===
 ray start --address=127.0.0.1:6379 --num-gpus=1
@@ -307,9 +302,7 @@ serve status
 #   sleep 60
 #   serve status
 
-curl http://localhost:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model": "opt-125m", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 10}'
+curl http://localhost:8000/v1/completions -H "Content-Type: application/json" -d '{"model":"opt-125m","prompt":"Hello","max_tokens":20}'
 # 預期：推理正常
 
 # ---- 步驟 4.6：清理 ----
@@ -318,22 +311,68 @@ curl http://localhost:8000/v1/chat/completions \
 
 
 ########################################################################
-# Phase 5：動態擴展測試（選做）
-# 目的：驗證 Cluster 啟動後可以動態加入新 Worker
-# 架構：Head + Worker1(GPU 3) → 後加 Worker2
+# Phase 5：3 Nodes 動態擴展測試（接續 Phase 3，不要清理）
+# 目的：驗證 Cluster 可動態加入無 GPU Worker，推理仍正常
+# 架構：Head + Worker1(GPU 3) + Worker2(無 GPU) = 3 nodes
 ########################################################################
 
-# 此 Phase 需要額外 GPU 才能測，目前只有 GPU 3 可用
-# 如果未來有更多 GPU（例如 GPU 2 也可用），再執行此 Phase
-# 做法：啟動 Head + Worker1 後，再起第二個 Worker 容器
-#   podman run ... --name joey-poc-worker2 ...
-#   ray start --address=127.0.0.1:6379 --num-gpus=1
-#   ray status  # 預期：3 nodes
+# ==== Tab 3（新 session）====
+
+# ---- 步驟 5.1：啟動無 GPU 的 Worker 2 ----
+podman run -it --rm \
+  --name joey-poc-worker-cpu \
+  --network host \
+  --security-opt=label=disable \
+  --pids-limit=-1 \
+  --shm-size=10g \
+  -e CUDA_VISIBLE_DEVICES="" \
+  --entrypoint bash \
+  joey-poc-ray-vllm:v3
+
+# === Worker 2 容器內 ===
+ray start --address=127.0.0.1:6379 --num-gpus=0
+
+# ==== 回到 Tab 1（Head 容器）====
+
+# ---- 步驟 5.2：確認 3 nodes ----
+ray status
+# 預期：3 nodes, 1 GPU（只有 Worker1 有 GPU）
+
+# ---- 步驟 5.3：推理仍正常（Ray 自動調度到有 GPU 的 Worker）----
+curl http://localhost:8000/v1/completions -H "Content-Type: application/json" -d '{"model":"opt-125m","prompt":"Hello, my name is","max_tokens":50}'
+# 預期：推理正常，模型跑在 Worker1（GPU 3）上
+
+# ---- 步驟 5.4：清理 Worker 2 ----
+# Tab 3（Worker 2）: ray stop && exit
+
+
+########################################################################
+# Phase 6：GPU 釋放驗證（接續 Phase 5 或 Phase 3）
+# 目的：證明 serve shutdown 後 GPU 記憶體被釋放
+########################################################################
+
+# ==== Tab 1（Head 容器）====
+
+# ---- 步驟 6.1：截圖 — GPU 釋放前 ----
+# 在 Tab 2（Worker）或 Host 上跑 nvidia-smi，截圖
+# 預期：GPU 3 佔用 ~86GB
+
+# ---- 步驟 6.2：停止模型部署 ----
+serve shutdown
+sleep 10
+
+# ---- 步驟 6.3：截圖 — GPU 釋放後 ----
+# 在 Tab 2（Worker）或 Host 上跑 nvidia-smi，截圖
+# 預期：GPU 3 佔用降回接近 0
+# 對比兩張截圖 → 證明 Ray Serve 可動態釋放 GPU 資源
 
 
 ########################################################################
 # 最終清理（每次測試完都要跑）
 ########################################################################
+
+# Tab 1（Head）: ray stop --force && exit
+# Tab 2（Worker）: ray stop --force && exit
 
 # 確認沒有殘留的 POC 容器
 podman ps -a | grep joey-poc
